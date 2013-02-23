@@ -161,3 +161,11 @@ pip-log.txt
 
 # Mac crap
 .DS_Store
+
+##############
+# Java
+##############
+*.class
+
+#Tomcat
+apache-tomcat-7.0.35/
