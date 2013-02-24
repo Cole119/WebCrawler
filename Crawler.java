@@ -2,13 +2,20 @@ import java.io.*;
 import java.net.*;
 import java.util.regex.*;
 import java.sql.*;
+import java.sql.Connection;
 import java.util.*;
 import java.util.concurrent.*;
+import org.jsoup.*;
+import org.jsoup.nodes.Document;
+import org.jsoup.nodes.Element;
+import org.jsoup.select.Elements;
 
 public class Crawler
 {
+	final static int MAX_THREADS = 10;
 	Connection connection;
 	int urlID;
+	volatile int urlCounter;
 	int maxUrls;
 	public Properties props;
 	public ConcurrentLinkedDeque<String> queue;
@@ -25,7 +32,9 @@ public class Crawler
 	}
 
 	public String getNextUrl(){
-		return queue.pollFirst();
+		urlCounter++;
+		if(urlCounter > maxUrls) return null;
+		else return queue.pollFirst();
 	}
 
 	public void readProperties() throws IOException {
@@ -66,64 +75,84 @@ public class Crawler
 	}
 
 	public boolean urlInDB(String urlFound) throws SQLException, IOException {
-        Statement stat = connection.createStatement();
-		ResultSet result = stat.executeQuery( "SELECT * FROM urls WHERE url LIKE '"+urlFound+"'");
+        //Statement stat = connection.createStatement();
+		//ResultSet result = stat.executeQuery( "SELECT * FROM urls WHERE url LIKE '"+urlFound+"'");
+		
+		if(urlFound.endsWith("/")){
+			urlFound = urlFound.substring(0, urlFound.length()-1);
+		}
+		String sql = "SELECT * FROM urls WHERE url LIKE ?";
+		PreparedStatement query = connection.prepareStatement(sql);
+		query.setString(1, urlFound);
+		ResultSet result = query.executeQuery();
 
 		if (result.next()) {
-	        System.out.println("URL "+urlFound+" already in DB");
+	        //System.out.println("URL "+urlFound+" already in DB");
 			return true;
 		}
 	       // System.out.println("URL "+urlFound+" not yet in DB");
 		return false;
 	}
 
-	public void insertURLInDB( String url) throws SQLException, IOException {
-        Statement stat = connection.createStatement();
+	public void insertURLInDB( String url, String content) throws SQLException, IOException {
+        /*Statement stat = connection.createStatement();
 		String query = "INSERT INTO urls VALUES ('"+urlID+"','"+url+"','')";
 		//System.out.println("Executing "+query);
-		stat.executeUpdate( query );
+		stat.executeUpdate( query );*/
+		
+		String sql = "INSERT INTO urls VALUES (?,?,?)";
+		PreparedStatement query = connection.prepareStatement(sql);
+		query.setInt(1, urlID);
+		query.setString(2, url);
+		query.setString(3, content.substring(0, 100));
+		query.executeUpdate();
 		urlID++;
 	}
 
-/*
-	public String makeAbsoluteURL(String url, String parentURL) {
-		if (url.indexOf(":")<0) {
+	public String makeAbsoluteUrl(String url, String parentUrl) {
+		if (url.indexOf(":")>0) {
 			// the protocol part is already there.
 			return url;
 		}
 
-		if (url.length > 0 && url.charAt(0) == '/') {
+		if (url.length() > 0 && url.charAt(0) == '/') {
 			// It starts with '/'. Add only host part.
-			int posHost = url.indexOf("://");
-			if (posHost <0) {
+			int posHost = parentUrl.indexOf("://");
+			if (posHost < 0) {
 				return url;
 			}
-			int posAfterHist = url.indexOf("/", posHost+3);
-			if (posAfterHist < 0) {
-				posAfterHist = url.Length();
+			int posAfterHost = parentUrl.indexOf("/", posHost+3);
+			if (posAfterHost < 0) {
+				posAfterHost = parentUrl.length();
 			}
-			String hostPart = url.substring(0, posAfterHost);
-			return hostPart + "/" + url;
+			String hostPart = parentUrl.substring(0, posAfterHost);
+			return hostPart + url;
 		} 
 
 		// URL start with a char different than "/"
-		int pos = parentURL.lastIndexOf("/");
-		int posHost = parentURL.indexOf("://");
+		int pos = parentUrl.lastIndexOf("/");
+		int posHost = parentUrl.indexOf("://");
 		if (posHost <0) {
 			return url;
 		}
-		
-		
-		
-
+		if(pos == parentUrl.length()-1){
+			return parentUrl + url;
+		}
+		else{
+			return parentUrl + "/" + url;
+		}
 	}
-*/
 
-   	public void fetchURL(String urlScanned) {
+   	/*public void fetchURL(String urlScanned) {
 		try {
 			URL url = new URL(urlScanned);
-			System.out.println("urlscanned="+urlScanned+" url.path="+url.getPath());
- 
+			System.out.println("Thread "+Thread.currentThread().getId()+": urlscanned="+urlScanned+" url.path="+url.getPath());
+			
+			Document doc = Jsoup.connect(urlScanned).get();
+			Elements links = doc.select("a");
+			for(Element e : links){
+				System.out.println("**"+e.attr("href"));
+			}
 			// open reader for URL
 			InputStreamReader in = 
    				new InputStreamReader(url.openStream());
@@ -149,16 +178,20 @@ public class Crawler
 				int end = matcher.end();
 				String match = input.substring(start, end);
 				String urlFound = matcher.group(2);
+				if(urlFound == null){
+					continue;
+				}
 
 				//check for relative url
+				urlFound = makeAbsoluteUrl(urlFound, urlScanned);
 				if(urlFound.startsWith("/")){
 					urlFound = url.getProtocol() + "://" + url.getHost() + urlFound;
 				}
-				System.out.println(urlFound);
+				//System.out.println(urlFound);
 
 				// Check if it is already in the database
 				synchronized(this){
-					if (urlID < maxUrls && !urlInDB(urlFound)) {
+					if (!urlInDB(urlFound)) {
 						insertURLInDB(urlFound);
 						queue.addLast(urlFound);
 					}		
@@ -168,10 +201,51 @@ public class Crawler
  			}
 
 		}
-      		catch (Exception e)
-      		{
-       			e.printStackTrace();
-      		}
+		catch (UnknownServiceException e){
+			
+		}
+  		catch (Exception e)
+  		{
+   			e.printStackTrace();
+  		}
+	}*/
+	
+	public void fetchURL(String urlScanned) {
+		try {
+			URL url = new URL(urlScanned);
+			System.out.println("Thread "+Thread.currentThread().getId()+": urlscanned="+urlScanned+" url.path="+url.getPath());
+			
+			Document doc = Jsoup.connect(urlScanned).get();
+			//System.out.println("\n\n"+doc.body().text()+"\n\n");
+			String content = doc.title() + " " + doc.body().text();
+			Elements links = doc.select("a");
+			for(Element anchor : links){
+				String urlFound = anchor.attr("href");
+				urlFound = makeAbsoluteUrl(urlFound, urlScanned);
+				synchronized(this){
+					if (!urlInDB(urlFound)) {
+						insertURLInDB(urlFound, content);
+						queue.addLast(urlFound);
+					}		
+				}
+			}
+		}
+		catch (MalformedURLException e){
+			System.out.println("Bad url: "+urlScanned);
+		}
+		catch (UnsupportedMimeTypeException e){
+			System.out.println("Not text/html: "+urlScanned);
+		}
+		catch (SocketTimeoutException e){
+			System.out.println("Url timed out: "+urlScanned);
+		}
+		catch (UnknownServiceException e){
+			
+		}
+  		catch (Exception e)
+  		{
+   			e.printStackTrace();
+  		}
 	}
 
    	public static void main(String[] args)
@@ -181,7 +255,7 @@ public class Crawler
     	RejectedExecutionHandler rejectedExecutionHandler = 
     				new ThreadPoolExecutor.CallerRunsPolicy();
     	ExecutorService executorService = 
-    				new ThreadPoolExecutor(4, 4, 0L, TimeUnit.MILLISECONDS, blockingQueue, rejectedExecutionHandler);
+    				new ThreadPoolExecutor(MAX_THREADS, MAX_THREADS, 0L, TimeUnit.MILLISECONDS, blockingQueue, rejectedExecutionHandler);
 
 		try {
 			crawler.readProperties();
@@ -194,6 +268,7 @@ public class Crawler
 				executorService.execute(crawler.new CrawlerRunnable(nextUrl));
 				//crawler.fetchURL(root);
 			}
+			executorService.shutdown();
 		}
 		catch( Exception e) {
          		e.printStackTrace();
