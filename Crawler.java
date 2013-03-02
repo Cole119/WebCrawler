@@ -28,13 +28,19 @@ public class Crawler
 	}
 
 	public boolean isQueueEmpty(){
-		return queue.isEmpty();
+		synchronized(this){
+			if(urlCounter > maxUrls) return true;
+			else return queue.isEmpty();
+		}
 	}
 
 	public String getNextUrl(){
-		urlCounter++;
-		if(urlCounter > maxUrls) return null;
-		else return queue.pollFirst();
+		synchronized(this){
+			urlCounter++;
+			//System.out.println("Thread "+Thread.currentThread().getId()+": "+urlCounter);
+			if(urlCounter > maxUrls) return null;
+			else return queue.pollFirst();
+		}
 	}
 
 	public void readProperties() throws IOException {
@@ -99,6 +105,10 @@ public class Crawler
 		String query = "INSERT INTO urls VALUES ('"+urlID+"','"+url+"','')";
 		//System.out.println("Executing "+query);
 		stat.executeUpdate( query );*/
+		
+		if(url.endsWith("/")){
+			url = url.substring(0, url.length()-1);
+		}
 		
 		String sql = "INSERT INTO urls VALUES (?,?,?)";
 		PreparedStatement query = connection.prepareStatement(sql);
@@ -211,11 +221,12 @@ public class Crawler
 	}*/
 	
 	public void fetchURL(String urlScanned) {
+		Document doc = null;
 		try {
 			URL url = new URL(urlScanned);
-			System.out.println("Thread "+Thread.currentThread().getId()+": urlscanned="+urlScanned+" url.path="+url.getPath());
+			//System.out.println("Thread "+Thread.currentThread().getId()+": urlscanned="+urlScanned+" url.path="+url.getPath());
 			
-			Document doc = Jsoup.connect(urlScanned).get();
+			doc = Jsoup.connect(urlScanned).get();
 			//System.out.println("\n\n"+doc.body().text()+"\n\n");
 			String content = doc.title() + " " + doc.body().text();
 			Elements links = doc.select("a");
@@ -242,6 +253,13 @@ public class Crawler
 		catch (UnknownServiceException e){
 			
 		}
+		catch (NullPointerException e){
+			System.out.println("NullPointerException: \n\tUrl: "+urlScanned);
+			System.out.println("\tdoc==null? "+doc.body()==null);
+		}
+		catch (java.nio.charset.IllegalCharsetNameException e){
+			System.out.println("Url is using an unsupported charset: "+urlScanned);
+		}
   		catch (Exception e)
   		{
    			e.printStackTrace();
@@ -264,11 +282,16 @@ public class Crawler
 			//queue.addLast(root);
 			crawler.fetchURL(root);
 			String nextUrl;
-			while((nextUrl=crawler.getNextUrl())!=null){
+			/*while((nextUrl=crawler.getNextUrl())!=null){
 				executorService.execute(crawler.new CrawlerRunnable(nextUrl));
+				//crawler.fetchURL(root);
+			}*/
+			while(!crawler.isQueueEmpty()){
+				executorService.execute(crawler.new CrawlerRunnable(crawler));
 				//crawler.fetchURL(root);
 			}
 			executorService.shutdown();
+			System.out.println("Done.");
 		}
 		catch( Exception e) {
          		e.printStackTrace();
@@ -277,11 +300,23 @@ public class Crawler
 
     public class CrawlerRunnable implements Runnable{
 		private String url;
+		private Crawler crawler;
+		
+		public CrawlerRunnable(Crawler c){
+			this.crawler = c;
+		}
 		public CrawlerRunnable(String url){
-			CrawlerRunnable.this.url = url;
+			this.url = url;
 		}
 
 		public void run(){
+			if(url==null){
+				url = crawler.getNextUrl();
+				if(url==null){ //the queue is empty
+					return;
+				}
+				System.out.println("Thread "+Thread.currentThread().getId()+": "+url);
+			}
 			fetchURL(url);
 		}
 	}
