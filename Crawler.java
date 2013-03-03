@@ -17,6 +17,7 @@ public class Crawler
 	int urlID;
 	volatile int urlCounter;
 	int maxUrls;
+	String restrictedDomain;
 	public Properties props;
 	public ConcurrentLinkedDeque<String> queue;
 	private Object queueLock;
@@ -50,6 +51,7 @@ public class Crawler
       		in.close();
 
       		maxUrls = Integer.parseInt(props.getProperty("crawler.maxurls"));
+      		restrictedDomain = props.getProperty("crawler.domain");
 	}
 
 	public void openConnection() throws SQLException, IOException
@@ -72,12 +74,14 @@ public class Crawler
 		// Delete the table first if any
 		try {
 			stat.executeUpdate("DROP TABLE URLS");
+			stat.executeUpdate("DROP TABLE word");
 		}
 		catch (Exception e) {
 		}
 			
 		// Create the table
         stat.executeUpdate("CREATE TABLE URLS (urlid INT, url VARCHAR(512), description VARCHAR(200))");
+        stat.executeUpdate("CREATE TABLE words (word VARCHAR(100), urlid INT)");
 	}
 
 	public boolean urlInDB(String urlFound) throws SQLException, IOException {
@@ -110,13 +114,25 @@ public class Crawler
 			url = url.substring(0, url.length()-1);
 		}
 		
-		String sql = "INSERT INTO urls VALUES (?,?,?)";
+		String sql = "INSERT INTO urls VALUES (?,?,'')";
 		PreparedStatement query = connection.prepareStatement(sql);
 		query.setInt(1, urlID);
 		query.setString(2, url);
-		query.setString(3, content.substring(0, 100));
+		//query.setString(3, content.substring(0, 100));
 		query.executeUpdate();
 		urlID++;
+	}
+	
+	public void updateUrlDescription(String url, String description) throws SQLException{
+		//System.out.println(url+": "+description.substring(0, 15));
+		if(url.endsWith("/")){
+			url = url.substring(0, url.length()-1);
+		}
+		String sql = "UPDATE urls SET description=? WHERE url LIKE ?";
+		PreparedStatement query = connection.prepareStatement(sql);
+		query.setString(1, description);
+		query.setString(2, url);
+		query.executeUpdate();
 	}
 
 	public String makeAbsoluteUrl(String url, String parentUrl) {
@@ -229,13 +245,25 @@ public class Crawler
 			doc = Jsoup.connect(urlScanned).get();
 			//System.out.println("\n\n"+doc.body().text()+"\n\n");
 			String content = doc.title() + " " + doc.body().text();
+			synchronized(this){
+				if(content.length() > 100){
+					updateUrlDescription(urlScanned, content.substring(0, 100));
+				}
+				else{
+					updateUrlDescription(urlScanned, content);
+				}
+			}
+			
 			Elements links = doc.select("a");
 			for(Element anchor : links){
 				String urlFound = anchor.attr("href");
 				urlFound = makeAbsoluteUrl(urlFound, urlScanned);
+				if(!urlFound.contains(restrictedDomain)){
+					continue;
+				}
 				synchronized(this){
 					if (!urlInDB(urlFound)) {
-						insertURLInDB(urlFound, content);
+						insertURLInDB(urlFound, "");
 						queue.addLast(urlFound);
 					}		
 				}
@@ -259,6 +287,9 @@ public class Crawler
 		}
 		catch (java.nio.charset.IllegalCharsetNameException e){
 			System.out.println("Url is using an unsupported charset: "+urlScanned);
+		}
+		catch (HttpStatusException e){
+			System.out.println("HTTP error fetching "+e.getUrl()+". Status="+e.getStatusCode());
 		}
   		catch (Exception e)
   		{
@@ -315,7 +346,7 @@ public class Crawler
 				if(url==null){ //the queue is empty
 					return;
 				}
-				System.out.println("Thread "+Thread.currentThread().getId()+": "+url);
+				//System.out.println("Thread "+Thread.currentThread().getId()+": "+url);
 			}
 			fetchURL(url);
 		}
