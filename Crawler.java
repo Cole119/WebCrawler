@@ -19,12 +19,12 @@ public class Crawler
 	int maxUrls;
 	String restrictedDomain;
 	public Properties props;
-	public ConcurrentLinkedDeque<String> queue;
+	public ConcurrentLinkedDeque<UrlIdPair> queue;
 	private Object queueLock;
 
 	Crawler() {
 		urlID = 0;
-		queue = new ConcurrentLinkedDeque<String>();
+		queue = new ConcurrentLinkedDeque<UrlIdPair>();
 		queueLock = new Object();
 	}
 
@@ -35,10 +35,10 @@ public class Crawler
 		}
 	}
 
-	public String getNextUrl(){
+	public UrlIdPair getNextUrl(){
 		synchronized(this){
 			urlCounter++;
-			//System.out.println("Thread "+Thread.currentThread().getId()+": "+urlCounter);
+			System.out.println("Thread "+Thread.currentThread().getId()+": "+urlCounter);
 			if(urlCounter > maxUrls) return null;
 			else return queue.pollFirst();
 		}
@@ -74,7 +74,7 @@ public class Crawler
 		// Delete the table first if any
 		try {
 			stat.executeUpdate("DROP TABLE URLS");
-			stat.executeUpdate("DROP TABLE word");
+			stat.executeUpdate("DROP TABLE words");
 		}
 		catch (Exception e) {
 		}
@@ -104,7 +104,7 @@ public class Crawler
 		return false;
 	}
 
-	public void insertURLInDB( String url, String content) throws SQLException, IOException {
+	public int insertURLInDB( String url, String content) throws SQLException, IOException {
         /*Statement stat = connection.createStatement();
 		String query = "INSERT INTO urls VALUES ('"+urlID+"','"+url+"','')";
 		//System.out.println("Executing "+query);
@@ -121,6 +121,7 @@ public class Crawler
 		//query.setString(3, content.substring(0, 100));
 		query.executeUpdate();
 		urlID++;
+		return urlID-1;
 	}
 	
 	public void updateUrlDescription(String url, String description) throws SQLException{
@@ -133,6 +134,41 @@ public class Crawler
 		query.setString(1, description);
 		query.setString(2, url);
 		query.executeUpdate();
+	}
+	
+	public void updateUrlDescription(int id, String description) throws SQLException{
+		String sql = "UPDATE urls SET description=? WHERE urlid=?";
+		PreparedStatement query = connection.prepareStatement(sql);
+		query.setString(1, description);
+		query.setInt(2, id);
+		query.executeUpdate();
+	}
+	
+	public void insertWordsInDB(int id, String content) throws SQLException{
+		String patternString = "[a-zA-Z\\-']+";
+		Pattern pattern = Pattern.compile(patternString, Pattern.CASE_INSENSITIVE);
+		Matcher matcher = pattern.matcher(content);
+		
+		int batchSize = 1000;
+		int count = 0;
+		String sql = "INSERT INTO words VALUES (?,?)";
+		PreparedStatement query = connection.prepareStatement(sql);
+		while(matcher.find()){
+			query.setString(1, matcher.group());
+			query.setInt(2, id);
+			query.addBatch();
+			
+			if(++count % batchSize == 0) {
+				synchronized(this){
+					query.executeBatch();
+					System.out.println("Thread "+Thread.currentThread().getId()+" just executed a batch insert.");
+				}
+		    }
+		}
+		synchronized(this){
+			query.executeBatch();
+			System.out.println("Thread "+Thread.currentThread().getId()+" just executed a batch insert.");
+		}
 	}
 
 	public String makeAbsoluteUrl(String url, String parentUrl) {
@@ -168,75 +204,8 @@ public class Crawler
 			return parentUrl + "/" + url;
 		}
 	}
-
-   	/*public void fetchURL(String urlScanned) {
-		try {
-			URL url = new URL(urlScanned);
-			System.out.println("Thread "+Thread.currentThread().getId()+": urlscanned="+urlScanned+" url.path="+url.getPath());
-			
-			Document doc = Jsoup.connect(urlScanned).get();
-			Elements links = doc.select("a");
-			for(Element e : links){
-				System.out.println("**"+e.attr("href"));
-			}
-			// open reader for URL
-			InputStreamReader in = 
-   				new InputStreamReader(url.openStream());
-
-			// read contents into string builder
-			StringBuilder input = new StringBuilder();
-			int ch;
-			while ((ch = in.read()) != -1) {
-         			input.append((char) ch);
-			}
-
- 			// search for all occurrences of pattern
-			//String patternString =  "<a\\s+href\\s*=\\s*(\"[^\"]*\"|[^\\s>]*)\\s*>";
-			String patternString =  "<a\\s+href\\s*=\\s*(\"([^\"]*)\"|[^\\s>]*)\\s*>";
-
-			Pattern pattern = 			
-     			Pattern.compile(patternString, 
-     			Pattern.CASE_INSENSITIVE);
-			Matcher matcher = pattern.matcher(input);
-		
-			while (matcher.find()) {
-				int start = matcher.start();
-				int end = matcher.end();
-				String match = input.substring(start, end);
-				String urlFound = matcher.group(2);
-				if(urlFound == null){
-					continue;
-				}
-
-				//check for relative url
-				urlFound = makeAbsoluteUrl(urlFound, urlScanned);
-				if(urlFound.startsWith("/")){
-					urlFound = url.getProtocol() + "://" + url.getHost() + urlFound;
-				}
-				//System.out.println(urlFound);
-
-				// Check if it is already in the database
-				synchronized(this){
-					if (!urlInDB(urlFound)) {
-						insertURLInDB(urlFound);
-						queue.addLast(urlFound);
-					}		
-				}		
 	
-    				//System.out.println(match);
- 			}
-
-		}
-		catch (UnknownServiceException e){
-			
-		}
-  		catch (Exception e)
-  		{
-   			e.printStackTrace();
-  		}
-	}*/
-	
-	public void fetchURL(String urlScanned) {
+	public void fetchURL(String urlScanned, int urlScannedId) {
 		Document doc = null;
 		try {
 			URL url = new URL(urlScanned);
@@ -247,12 +216,14 @@ public class Crawler
 			String content = doc.title() + " " + doc.body().text();
 			synchronized(this){
 				if(content.length() > 100){
-					updateUrlDescription(urlScanned, content.substring(0, 100));
+					updateUrlDescription(urlScannedId, content.substring(0, 100));
 				}
 				else{
-					updateUrlDescription(urlScanned, content);
+					updateUrlDescription(urlScannedId, content);
 				}
+				//insertWordsInDB(urlScannedId, content);
 			}
+			insertWordsInDB(urlScannedId, content);
 			
 			Elements links = doc.select("a");
 			for(Element anchor : links){
@@ -263,8 +234,9 @@ public class Crawler
 				}
 				synchronized(this){
 					if (!urlInDB(urlFound)) {
-						insertURLInDB(urlFound, "");
-						queue.addLast(urlFound);
+						int currentId = insertURLInDB(urlFound, "");
+						UrlIdPair pair = new UrlIdPair(urlFound, currentId);
+						queue.addLast(pair);
 					}		
 				}
 			}
@@ -310,8 +282,9 @@ public class Crawler
 			crawler.readProperties();
 			String root = crawler.props.getProperty("crawler.root");
 			crawler.createDB();
+			crawler.insertURLInDB(root, "");
 			//queue.addLast(root);
-			crawler.fetchURL(root);
+			crawler.fetchURL(root, 0);
 			String nextUrl;
 			/*while((nextUrl=crawler.getNextUrl())!=null){
 				executorService.execute(crawler.new CrawlerRunnable(nextUrl));
@@ -331,24 +304,40 @@ public class Crawler
 
     public class CrawlerRunnable implements Runnable{
 		private String url;
+		private int id;
 		private Crawler crawler;
 		
 		public CrawlerRunnable(Crawler c){
 			this.crawler = c;
 		}
-		public CrawlerRunnable(String url){
-			this.url = url;
-		}
 
 		public void run(){
-			if(url==null){
-				url = crawler.getNextUrl();
-				if(url==null){ //the queue is empty
-					return;
-				}
-				//System.out.println("Thread "+Thread.currentThread().getId()+": "+url);
+			UrlIdPair pair = crawler.getNextUrl();
+			if(pair==null){ //the queue is empty
+				return;
 			}
-			fetchURL(url);
+			url = pair.getUrl();
+			id = pair.getId();
+			//System.out.println("Thread "+Thread.currentThread().getId()+": "+url);
+			fetchURL(url, id);
 		}
 	}
+    
+    public class UrlIdPair{
+    	private String url;
+    	private int id;
+    	
+    	public UrlIdPair(String url, int id){
+    		this.url = url;
+    		this.id = id;
+    	}
+    	
+    	public String getUrl(){
+    		return this.url;
+    	}
+    	
+    	public int getId(){
+    		return this.id;
+    	}
+    }
 }
