@@ -1,20 +1,45 @@
-import java.io.*;
+import java.io.BufferedWriter;
+import java.io.FileInputStream;
+import java.io.FileNotFoundException;
+import java.io.FileWriter;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.PrintWriter;
+import java.lang.management.ManagementFactory;
+import java.lang.management.MemoryMXBean;
 import java.lang.management.MemoryNotificationInfo;
-import java.net.*;
-import java.util.regex.*;
-import java.sql.*;
+import java.net.ConnectException;
+import java.net.MalformedURLException;
+import java.net.SocketTimeoutException;
+import java.net.URL;
+import java.net.UnknownServiceException;
 import java.sql.Connection;
-import java.util.*;
-import java.util.concurrent.*;
+import java.sql.DriverManager;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.sql.Statement;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.LinkedHashSet;
+import java.util.LinkedList;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Properties;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import javax.management.Notification;
+import javax.management.NotificationEmitter;
 import javax.management.NotificationListener;
 
 import org.apache.tika.exception.TikaException;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.parser.ParseContext;
 import org.apache.tika.parser.html.HtmlParser;
-import org.jsoup.*;
+import org.jsoup.HttpStatusException;
+import org.jsoup.Jsoup;
+import org.jsoup.UnsupportedMimeTypeException;
 import org.jsoup.nodes.Document;
 import org.jsoup.nodes.Element;
 import org.jsoup.select.Elements;
@@ -38,11 +63,17 @@ public class Crawler
 	//private Object queueLock = new Object();
 	//private Object databaseLock = new Object();
 	boolean doneCrawling = false;
+	NotificationEmitter emitter;
 
 	Crawler() {
 		urlID = 0;
 		queue = new LinkedList<UrlIdPair>();
 		wordsCache = new HashMap<>();
+		
+		MemoryMXBean mbean = ManagementFactory.getMemoryMXBean();
+		emitter = (NotificationEmitter) mbean;
+		UsageListener listener = new UsageListener();
+		emitter.addNotificationListener(listener, null, null);
 	}
 
 	public boolean isQueueEmpty(){
@@ -203,6 +234,7 @@ public class Crawler
 		String patternString = "[a-zA-Z0-9\\-']+";
 		Pattern pattern = Pattern.compile(patternString, Pattern.CASE_INSENSITIVE);
 		Matcher matcher = pattern.matcher(content);
+		int location = 0;
 		while(matcher.find()){
 			synchronized(cacheLock){
 				String word = matcher.group().toLowerCase(Locale.ENGLISH);
@@ -618,7 +650,7 @@ public class Crawler
                 new Thread(new Runnable(){
                 	public void run(){
                 		synchronized(cacheLock){
-                			writeCacheToDB();
+                			writeCacheToTxt();
                 			wordsCache.clear();
                 		}
                 	}
